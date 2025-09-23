@@ -1,0 +1,13 @@
+int add(int a,int b){
+
+    return a+b;
+}
+
+int main(){
+    int a ;
+    a=getint();
+    int z=add(1,2);
+    putint(z);
+    return 0;
+
+}
