@@ -1,0 +1,5 @@
+int main() {
+    putint(12345);
+    putch(65); // 输出字符 'A'
+    return 0;
+}

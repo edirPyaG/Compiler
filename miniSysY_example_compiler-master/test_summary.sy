@@ -1,0 +1,1 @@
+int main() { putint(999); return 0; }

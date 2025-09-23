@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# SysY 完整编译器：前端(sysycc) + 后端(clang/gcc)
+# 版本：2.0 - 支持系统库和多后端
+
+set -e
+
+show_help() {
+    cat << EOF
+SysY Compiler v2.0 - 完整的 SysY 到可执行文件编译器
+
+用法: sysyc [选项] 输入文件
+选项:
+  -o FILE        指定输出文件名 (默认: a.out)
+  -S             只生成汇编代码 (.s)
+  -c             只编译到目标文件 (.o)  
+  -O0/1/2/3      优化级别 (默认: O0)
+  --backend=TOOL 指定后端工具 (clang/gcc/llc, 默认: clang)
+  --ir-only      只生成 LLVM IR (.ll)
+  -v, --verbose  显示详细编译过程
+  -h, --help     显示此帮助
+
+后端选择:
+  clang         使用 clang 直接编译 LLVM IR (推荐)
+  gcc           使用传统 llc + gcc 组合
+  llc           使用 llc + as 组合
+
+示例:
+  sysyc hello.sy                    # 使用 clang 编译到 a.out
+  sysyc -o hello hello.sy           # 编译到 hello
+  sysyc -O2 --backend=gcc hello.sy  # 使用 gcc 后端，O2优化
+  sysyc -S hello.sy                 # 生成汇编文件
+  sysyc --ir-only hello.sy          # 只生成 LLVM IR
+EOF
+}
+
+# 默认参数
+input_file=""
+output_file="a.out"
+opt_level="0"
+backend="clang"
+only_asm=false
+only_obj=false
+ir_only=false
+verbose=false
+
+# 解析命令行参数
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -o)
+            output_file="$2"
+            shift 2
+            ;;
+        -S)
+            only_asm=true
+            shift
+            ;;
+        -c)
+            only_obj=true
+            shift
+            ;;
+        -O0|-O1|-O2|-O3)
+            opt_level="${1#-O}"
+            shift
+            ;;
+        --backend=*)
+            backend="${1#--backend=}"
+            shift
+            ;;
+        --ir-only)
+            ir_only=true
+            shift
+            ;;
+        -v|--verbose)
+            verbose=true
+            shift
+            ;;
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -*)
+            echo "未知选项: $1" >&2
+            exit 1
+            ;;
+        *)
+            input_file="$1"
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "$input_file" ]]; then
+    echo "错误: 需要输入文件" >&2
+    show_help >&2
+    exit 1
+fi
+
+if [[ ! -f "$input_file" ]]; then
+    echo "错误: 文件不存在: $input_file" >&2
+    exit 1
+fi
+
+# 验证后端工具
+case "$backend" in
+    clang)
+        if ! command -v clang &> /dev/null; then
+            echo "错误: clang 未安装" >&2
+            exit 1
+        fi
+        ;;
+    gcc)
+        if ! command -v llc &> /dev/null || ! command -v gcc &> /dev/null; then
+            echo "错误: llc 或 gcc 未安装" >&2
+            exit 1
+        fi
+        ;;
+    llc)
+        if ! command -v llc &> /dev/null || ! command -v as &> /dev/null; then
+            echo "错误: llc 或 as 未安装" >&2
+            exit 1
+        fi
+        ;;
+    *)
+        echo "错误: 不支持的后端: $backend" >&2
+        echo "支持的后端: clang, gcc, llc" >&2
+        exit 1
+        ;;
+esac
+
+# 临时文件
+temp_ll=$(mktemp --suffix=.ll)
+temp_s=$(mktemp --suffix=.s)
+temp_o=$(mktemp --suffix=.o)
+
+cleanup() {
+    rm -f "$temp_ll" "$temp_s" "$temp_o"
+}
+trap cleanup EXIT
+
+# 详细输出函数
+log() {
+    if $verbose; then
+        echo "  $1"
+    fi
+}
+
+echo "编译 $input_file (后端: $backend, 优化: O$opt_level)..."
+
+# 1. SysY -> LLVM IR
+log "前端: SysY -> LLVM IR"
+if ! sysycc "$input_file"; then
+    echo "错误: 前端编译失败" >&2
+    exit 1
+fi
+# sysycc 默认输出到 out.ll
+if [[ ! -f "out.ll" ]]; then
+    echo "错误: 前端未生成 LLVM IR" >&2
+    exit 1
+fi
+cp out.ll "$temp_ll"
+
+# 如果只要 IR，直接输出
+if $ir_only; then
+    sysycc "$input_file" > "${input_file%.sy}.ll"
+    echo "生成 LLVM IR: ${input_file%.sy}.ll"
+    exit 0
+fi
+
+# 2. 根据后端和选项处理
+case "$backend" in
+    clang)
+        if $only_asm; then
+            log "后端(clang): LLVM IR -> 汇编"
+            clang -S -O$opt_level "$temp_ll" -o "${output_file%.sy}.s" 2>/dev/null
+            echo "生成汇编文件: ${output_file%.sy}.s"
+        elif $only_obj; then
+            log "后端(clang): LLVM IR -> 目标文件"
+            clang -c -O$opt_level "$temp_ll" -o "${output_file%.sy}.o" 2>/dev/null
+            echo "生成目标文件: ${output_file%.sy}.o"
+        else
+            log "后端(clang): LLVM IR -> 可执行文件"
+            clang -O$opt_level "$temp_ll" -lsysy -o "$output_file" 2>/dev/null
+            echo "生成可执行文件: $output_file"
+        fi
+        ;;
+    gcc)
+        if $only_asm; then
+            log "后端(llc+gcc): LLVM IR -> 汇编"
+            llc -O$opt_level "$temp_ll" -o "${output_file%.sy}.s"
+            echo "生成汇编文件: ${output_file%.sy}.s"
+        elif $only_obj; then
+            log "后端(llc+gcc): LLVM IR -> 目标文件"
+            llc -O$opt_level "$temp_ll" -o "$temp_s"
+            gcc -c "$temp_s" -o "${output_file%.sy}.o"
+            echo "生成目标文件: ${output_file%.sy}.o"
+        else
+            log "后端(llc+gcc): LLVM IR -> 可执行文件"
+            llc -O$opt_level "$temp_ll" -o "$temp_s"
+            gcc "$temp_s" -lsysy -o "$output_file"
+            echo "生成可执行文件: $output_file"
+        fi
+        ;;
+    llc)
+        if $only_asm; then
+            log "后端(llc): LLVM IR -> 汇编"
+            llc -O$opt_level "$temp_ll" -o "${output_file%.sy}.s"
+            echo "生成汇编文件: ${output_file%.sy}.s"
+        elif $only_obj; then
+            log "后端(llc+as): LLVM IR -> 目标文件"
+            llc -O$opt_level "$temp_ll" -o "$temp_s"
+            as "$temp_s" -o "${output_file%.sy}.o"
+            echo "生成目标文件: ${output_file%.sy}.o"
+        else
+            log "后端(llc+as+ld): LLVM IR -> 可执行文件"
+            llc -O$opt_level "$temp_ll" -o "$temp_s"
+            as "$temp_s" -o "$temp_o"
+            ld "$temp_o" -lsysy -lc --dynamic-linker /lib/ld-linux-aarch64.so.1 \
+               /usr/lib/aarch64-linux-gnu/crt1.o \
+               /usr/lib/aarch64-linux-gnu/crti.o \
+               /usr/lib/aarch64-linux-gnu/crtn.o \
+               -o "$output_file"
+            echo "生成可执行文件: $output_file"
+        fi
+        ;;
+esac
+
+if $verbose; then
+    echo "编译完成！"
+fi

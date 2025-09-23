@@ -1,0 +1,34 @@
+// 文件名: factorial.sy
+
+int main() {
+    int n;          // 用于存储用户输入的整数
+    int result;     // 用于存储计算出的阶乘结果
+    int i;          // 循环计数器
+
+    // 使用运行时库函数 putf 打印提示信息
+    putf("请输入一个非负整数: ");
+
+    // 使用运行时库函数 getint 获取用户输入
+    n = getint();
+
+    if (n < 0) {
+        putf("错误: 阶乘不支持负数\n");
+    } else {
+        // 初始化结果为 1
+        result = 1;
+        // 初始化循环计数器
+        i = 1;
+        
+        // 使用 while 循环计算阶乘
+        while (i <= n) {
+            result = result * i;
+            i = i + 1;
+        }
+
+        // 使用 putf 格式化输出结果
+        putf("计算结果: %d 的阶乘是 %d\n", n, result);
+    }
+
+    // main 函数必须返回 int 类型
+    return 0;
+}
